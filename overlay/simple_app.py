@@ -16,6 +16,7 @@ import os
 import asyncio
 import json
 import logging
+import traceback
 
 os.environ.setdefault("DISPLAY", ":99")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
@@ -59,6 +60,7 @@ class S:
     running = False
     queue = None        # asyncio.Queue для SSE
     history = []        # последние события (для подключившихся позже)
+    last_error = None   # полный traceback последней ошибки (для диагностики)
 
 
 def emit(ev: dict):
@@ -133,7 +135,7 @@ class RunReq(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "running": S.running, "model": MODEL}
+    return {"ok": True, "running": S.running, "model": MODEL, "last_error": S.last_error}
 
 
 @app.post("/run")
@@ -145,10 +147,12 @@ async def run(req: RunReq):
         return JSONResponse({"ok": False, "error": "Пустая задача"}, status_code=400)
 
     S.history = []
+    S.last_error = None
     S.running = True
     emit({"type": "start", "task": text})
 
     async def runner():
+        done_emitted = False
         try:
             await ensure_browser()
             llm = ChatAnthropic(
@@ -169,13 +173,29 @@ async def run(req: RunReq):
                 use_vision=True,
                 source="byfly-simple",
             )
-            await S.agent.run(max_steps=MAX_STEPS)
+            result = await S.agent.run(max_steps=MAX_STEPS)
+            # гарантированный финал: даже если done_callback не вызвался
+            final = None
+            try:
+                if result is not None and hasattr(result, "final_result"):
+                    final = result.final_result()
+                elif getattr(S.agent, "state", None) is not None:
+                    final = S.agent.state.history.final_result()
+            except Exception:
+                final = None
+            emit({"type": "done", "result": final or "Готово"})
+            done_emitted = True
         except asyncio.CancelledError:
             emit({"type": "stopped", "result": "Остановлено пользователем"})
-        except Exception as e:
-            log.exception("agent error")
-            emit({"type": "error", "error": str(e)})
+            done_emitted = True
+        except BaseException as e:
+            S.last_error = traceback.format_exc()
+            log.error("agent error:\n%s", S.last_error)
+            emit({"type": "error", "error": f"{type(e).__name__}: {e}"})
+            done_emitted = True
         finally:
+            if not done_emitted:
+                emit({"type": "error", "error": "Завершилось без результата"})
             S.running = False
             S.agent = None
 
