@@ -61,6 +61,8 @@ class S:
     queue = None        # asyncio.Queue для SSE
     history = []        # последние события (для подключившихся позже)
     last_error = None   # полный traceback последней ошибки (для диагностики)
+    steps_seen = 0      # сколько раз сработал step-callback (диагностика)
+    cb_error = None     # ошибка внутри step-callback
 
 
 def emit(ev: dict):
@@ -92,6 +94,7 @@ async def ensure_browser():
 
 async def step_cb(state, output, step_num):
     """Превращаем шаг агента в понятную строку лога."""
+    S.steps_seen += 1
     goal, evalp, actions, url = "", "", [], ""
     try:
         url = getattr(state, "url", "") or ""
@@ -135,7 +138,8 @@ class RunReq(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "running": S.running, "model": MODEL, "last_error": S.last_error}
+    return {"ok": True, "running": S.running, "model": MODEL,
+            "last_error": S.last_error, "steps_seen": S.steps_seen, "cb_error": S.cb_error}
 
 
 @app.post("/run")
@@ -148,6 +152,8 @@ async def run(req: RunReq):
 
     S.history = []
     S.last_error = None
+    S.cb_error = None
+    S.steps_seen = 0
     S.running = True
     emit({"type": "start", "task": text})
 
@@ -174,16 +180,29 @@ async def run(req: RunReq):
                 source="byfly-simple",
             )
             result = await S.agent.run(max_steps=MAX_STEPS)
-            # гарантированный финал: даже если done_callback не вызвался
-            final = None
+            # гарантированный финал + диагностика истории
+            hist = result if (result is not None and hasattr(result, "final_result")) \
+                else getattr(getattr(S.agent, "state", None), "history", None)
+            final, n_steps, errs, urls = None, None, [], []
             try:
-                if result is not None and hasattr(result, "final_result"):
-                    final = result.final_result()
-                elif getattr(S.agent, "state", None) is not None:
-                    final = S.agent.state.history.final_result()
+                if hist is not None:
+                    final = hist.final_result()
+                    try:
+                        n_steps = len(getattr(hist, "history", []) or [])
+                    except Exception:
+                        n_steps = None
+                    try:
+                        errs = [str(e) for e in (hist.errors() or []) if e]
+                    except Exception:
+                        errs = []
+                    try:
+                        urls = [u for u in (hist.urls() or []) if u]
+                    except Exception:
+                        urls = []
             except Exception:
-                final = None
-            emit({"type": "done", "result": final or "Готово"})
+                S.last_error = traceback.format_exc()
+            emit({"type": "done", "result": final or "Готово",
+                  "steps": n_steps, "errors": errs, "urls": urls})
             done_emitted = True
         except asyncio.CancelledError:
             emit({"type": "stopped", "result": "Остановлено пользователем"})
