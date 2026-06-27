@@ -36,7 +36,7 @@ from src.controller.custom_controller import CustomController
 
 WIDTH = int(os.getenv("RESOLUTION_WIDTH", "1280"))
 HEIGHT = int(os.getenv("RESOLUTION_HEIGHT", "900"))
-MODEL = os.getenv("AGENT_MODEL", "claude-sonnet-4-20250514")
+MODEL = os.getenv("AGENT_MODEL", "claude-sonnet-4-5-20250929")
 MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "40"))
 PORT = int(os.getenv("PORT", "7788"))
 
@@ -138,7 +138,9 @@ class RunReq(BaseModel):
 
 @app.get("/health")
 async def health():
+    k = os.environ.get("ANTHROPIC_API_KEY") or ""
     return {"ok": True, "running": S.running, "model": MODEL,
+            "has_key": bool(k), "key_tail": k[-6:] if k else "",
             "last_error": S.last_error, "steps_seen": S.steps_seen, "cb_error": S.cb_error}
 
 

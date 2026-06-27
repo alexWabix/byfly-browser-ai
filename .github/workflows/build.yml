@@ -42,7 +42,12 @@ jobs:
               "[program:webui]\n"
               "command=python simple_app.py\n"
               "directory=/app\n"
-              'environment=DISPLAY=":99",PYTHONUNBUFFERED="1"\n'
+              'environment=DISPLAY=":99",PYTHONUNBUFFERED="1",'
+              'ANTHROPIC_API_KEY="%(ENV_ANTHROPIC_API_KEY)s",'
+              'AGENT_MODEL="%(ENV_AGENT_MODEL)s",'
+              'AGENT_MAX_STEPS="%(ENV_AGENT_MAX_STEPS)s",'
+              'RESOLUTION_WIDTH="%(ENV_RESOLUTION_WIDTH)s",'
+              'RESOLUTION_HEIGHT="%(ENV_RESOLUTION_HEIGHT)s"\n'
               "autorestart=true\n"
               "stdout_logfile=/dev/stdout\n"
               "stdout_logfile_maxbytes=0\n"
