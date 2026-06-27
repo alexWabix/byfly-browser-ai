@@ -3,26 +3,72 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
 permissions:
   contents: read
   packages: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout overlay repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Lowercase owner
         id: vars
         run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-      - name: Clone browser-use/web-ui
+
+      - name: Clone browser-use/web-ui (pinned)
         run: git clone --depth 1 https://github.com/browser-use/web-ui.git src
+
+      - name: Apply ByFly overlay (minimal UI instead of Gradio)
+        run: |
+          set -e
+          # 1) наш минимальный сервер вместо тяжёлого Gradio
+          cp repo/overlay/simple_app.py src/simple_app.py
+
+          # 2) fastapi/uvicorn (gradio их и так тянет, но фиксируем явно)
+          printf '\nfastapi\nuvicorn[standard]\n' >> src/requirements.txt
+
+          # 3) в supervisord подменяем программу webui: вместо webui.py -> simple_app.py
+          python3 - <<'PY'
+          import re
+          p = 'src/supervisord.conf'
+          s = open(p).read()
+          block = (
+              "[program:webui]\n"
+              "command=python simple_app.py\n"
+              "directory=/app\n"
+              'environment=DISPLAY=":99",PYTHONUNBUFFERED="1"\n'
+              "autorestart=true\n"
+              "stdout_logfile=/dev/stdout\n"
+              "stdout_logfile_maxbytes=0\n"
+              "stderr_logfile=/dev/stderr\n"
+              "stderr_logfile_maxbytes=0\n"
+              "priority=400\n"
+              "startretries=5\n"
+              "startsecs=3\n"
+              "stopsignal=TERM\n"
+              "stopwaitsecs=10\n"
+          )
+          s = re.sub(r'\[program:webui\][\s\S]*$', block, s)
+          open(p, 'w').write(s)
+          print("patched supervisord.conf:\n", block)
+          PY
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Login to ghcr
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build & push
         uses: docker/build-push-action@v6
         with:
